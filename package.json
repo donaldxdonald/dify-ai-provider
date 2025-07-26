@@ -1,7 +1,7 @@
 {
-  "name": "dify-ai-provider",
-  "version": "0.1.6",
-  "description": "Dify provider for Vercel AI SDK",
+  "name": "@dndxdnd/dify-ai-provider",
+  "version": "0.2.0",
+  "description": "Dify provider for Vercel AI SDK (fork ver.)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -26,11 +26,11 @@
   "author": "Oscar Jiang <pengj0520@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/warmwind/dify-ai-provider"
+    "url": "https://github.com/donaldxdonald/dify-ai-provider"
   },
-  "homepage": "https://github.com/warmwind/dify-ai-provider#readme",
+  "homepage": "https://github.com/donaldxdonald/dify-ai-provider#readme",
   "bugs": {
-    "url": "https://github.com/warmwind/dify-ai-provider/issues"
+    "url": "https://github.com/donaldxdonald/dify-ai-provider/issues"
   },
   "publishConfig": {
     "access": "public"
