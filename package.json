@@ -1,6 +1,6 @@
 {
   "name": "@dndxdnd/dify-ai-provider",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Dify provider for Vercel AI SDK (fork ver.)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -55,4 +55,3 @@
     "vitest": "^1.0.0"
   }
 }
-

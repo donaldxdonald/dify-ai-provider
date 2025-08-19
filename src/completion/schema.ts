@@ -8,4 +8,11 @@ export const workflowCompletionResponseSchema = z.object({
     workflow_id: z.string(),
     outputs: z.record(z.string(), z.any()).optional(),
   }),
+  metadata: z.object({
+    usage: z.object({
+      completion_tokens: z.number(),
+      prompt_tokens: z.number(),
+      total_tokens: z.number(),
+    }),
+  }),
 });

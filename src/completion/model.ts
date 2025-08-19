@@ -1,11 +1,11 @@
 import {
   APICallError,
   type JSONValue,
-  type LanguageModelV1,
-  type LanguageModelV1CallOptions,
-  type LanguageModelV1FinishReason,
-  type LanguageModelV1ObjectGenerationMode,
-  type LanguageModelV1StreamPart,
+  type LanguageModelV2,
+  type LanguageModelV2CallOptions,
+  type LanguageModelV2Content,
+  type LanguageModelV2FinishReason,
+  type LanguageModelV2StreamPart,
 } from "@ai-sdk/provider";
 import {
   combineHeaders,
@@ -24,6 +24,10 @@ import {
 import type { DifyStreamEvent } from "../dify-chat-schema";
 import { DifyCompletionModelId, DifyCompletionSettings } from "./settings";
 import { workflowCompletionResponseSchema } from "./schema";
+import type { z } from "zod";
+
+type CompletionResponse = z.infer<typeof workflowCompletionResponseSchema>;
+type ErrorResponse = z.infer<typeof errorResponseSchema>;
 
 interface ModelConfig {
   provider: string;
@@ -33,27 +37,17 @@ interface ModelConfig {
 }
 
 const difyFailedResponseHandler = createJsonErrorResponseHandler({
-  errorSchema: errorResponseSchema,
-  errorToMessage: (data) => {
+  errorSchema: errorResponseSchema as any,
+  errorToMessage: (data: ErrorResponse) => {
     console.log("Dify API error:", data);
     return `Dify API error: ${data.message}`;
   },
 });
 
-// For TypeScript compatibility
-interface ExtendedLanguageModelV1CallOptions
-  extends LanguageModelV1CallOptions {
-  messages?: Array<{
-    role: string;
-    content: string | Array<string | { type: string; [key: string]: any }>;
-  }>;
-}
-
-export class DifyCompletionLanguageModel implements LanguageModelV1 {
-  readonly specificationVersion = "v1";
+export class DifyCompletionLanguageModel implements LanguageModelV2 {
+  readonly specificationVersion = "v2";
   readonly modelId: string;
-  readonly defaultObjectGenerationMode: LanguageModelV1ObjectGenerationMode =
-    undefined;
+  readonly supportedUrls: Record<string, RegExp[]> = {};
 
   private readonly generateId: () => string;
   private readonly completionEndpoint: string;
@@ -80,8 +74,8 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
   }
 
   async doGenerate(
-    options: ExtendedLanguageModelV1CallOptions
-  ): Promise<Awaited<ReturnType<LanguageModelV1["doGenerate"]>>> {
+    options: LanguageModelV2CallOptions
+  ): Promise<Awaited<ReturnType<LanguageModelV2["doGenerate"]>>> {
     const { abortSignal } = options;
     const requestBody = this.getRequestBody(options);
 
@@ -92,41 +86,50 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
       abortSignal,
       failedResponseHandler: difyFailedResponseHandler,
       successfulResponseHandler: createJsonResponseHandler(
-        workflowCompletionResponseSchema
+        workflowCompletionResponseSchema as any
       ),
       fetch: this.config.fetch,
     });
 
+    const typedData = data as CompletionResponse;
+    const content: LanguageModelV2Content[] = [];
+
+    const textContent = typedData.data.outputs?.result || "";
+    // Add text content if available
+    if (textContent) {
+      content.push({
+        type: "text",
+        text: textContent,
+      });
+    }
+
     return {
-      text: data.data?.outputs?.result || "",
-      toolCalls: [], // Dify workflows don't support tool calls
-      finishReason: "stop" as LanguageModelV1FinishReason,
+      content,
+      finishReason: "stop" as LanguageModelV2FinishReason,
       usage: {
-        promptTokens: 0,
-        completionTokens: 0,
+        inputTokens: typedData.metadata.usage.prompt_tokens,
+        outputTokens: typedData.metadata.usage.completion_tokens,
+        totalTokens: typedData.metadata.usage.total_tokens,
       },
-      rawCall: this.createRawCall(options),
+      warnings: [],
       providerMetadata: {
         difyWorkflowData: {
-          workflowRunId: data.workflow_run_id as JSONValue,
-          taskId: data.task_id as JSONValue,
+          workflowRunId: typedData.workflow_run_id as JSONValue,
+          taskId: typedData.task_id as JSONValue,
         },
-      },
-      rawResponse: {
-        headers: responseHeaders,
-        body: data,
       },
       request: { body: JSON.stringify(requestBody) },
       response: {
-        id: data.workflow_run_id || this.generateId(),
+        id: typedData.workflow_run_id || this.generateId(),
         timestamp: new Date(),
+        headers: responseHeaders,
       },
     };
   }
 
   async doStream(
-    options: ExtendedLanguageModelV1CallOptions
-  ): Promise<Awaited<ReturnType<LanguageModelV1["doStream"]>>> {
+    options: LanguageModelV2CallOptions
+  ): Promise<Awaited<ReturnType<LanguageModelV2["doStream"]>>> {
     const { abortSignal } = options;
     const requestBody = this.getRequestBody(options);
     const body = { ...requestBody, response_mode: "streaming" };
@@ -137,7 +140,7 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
       body,
       failedResponseHandler: difyFailedResponseHandler,
       successfulResponseHandler: createEventSourceResponseHandler(
-        difyStreamEventSchema
+        difyStreamEventSchema as any
       ),
       abortSignal,
       fetch: this.config.fetch,
@@ -145,12 +148,13 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
 
     let workflowRunId: string | undefined;
     let taskId: string | undefined;
+    const msgId = generateId();
 
     return {
       stream: responseStream.pipeThrough(
         new TransformStream<
           ParseResult<DifyStreamEvent>,
-          LanguageModelV1StreamPart
+          LanguageModelV2StreamPart
         >({
           transform(chunk, controller) {
             if (!chunk.success) {
@@ -183,6 +187,10 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
                 }
 
                 controller.enqueue({
+                  type: "text-end",
+                  id: msgId,
+                });
+                controller.enqueue({
                   type: "finish",
                   finishReason: "stop",
                   providerMetadata: {
@@ -192,8 +200,9 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
                     },
                   },
                   usage: {
-                    promptTokens: 0,
-                    completionTokens: totalTokens,
+                    inputTokens: 0,
+                    outputTokens: totalTokens,
+                    totalTokens: totalTokens,
                   },
                 });
                 break;
@@ -210,7 +219,8 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
                 ) {
                   controller.enqueue({
                     type: "text-delta",
-                    textDelta: data.data.text,
+                    id: msgId,
+                    delta: data.data.text,
                   });
                 }
                 break;
@@ -226,6 +236,11 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
                     type: "response-metadata",
                     id: data.workflow_run_id,
                   });
+
+                  controller.enqueue({
+                    type: "text-start",
+                    id: msgId,
+                  });
                 }
                 break;
               }
@@ -235,18 +250,17 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
           },
         })
       ),
-      rawCall: this.createRawCall(options),
-      rawResponse: { headers: responseHeaders },
       request: { body: JSON.stringify(body) },
+      response: { headers: responseHeaders },
     };
   }
 
   /**
    * Get the request body for the Dify Workflow API
    */
-  private getRequestBody(options: ExtendedLanguageModelV1CallOptions) {
-    // In AI SDK v4, messages are in options.prompt instead of options.messages
-    const messages = options.messages || options.prompt;
+  private getRequestBody(options: LanguageModelV2CallOptions) {
+    // In AI SDK v5 LanguageModelV2, messages are in options.prompt instead of options.messages
+    const messages = options.prompt || (options as any).messages;
 
     if (!messages || !messages.length) {
       throw new APICallError({
@@ -269,13 +283,19 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
     // Handle file/image attachments
     const hasAttachments =
       Array.isArray(latestMessage.content) &&
-      latestMessage.content.some((part: any) => {
-        return typeof part !== "string" && part.type === "image";
+      latestMessage.content.some((part) => {
+        return (
+          typeof part !== "string" &&
+          part !== null &&
+          typeof part === "object" &&
+          "type" in part &&
+          part.type === "file"
+        );
       });
 
     if (hasAttachments) {
       throw new APICallError({
-        message: "Dify provider does not currently support image attachments",
+        message: "Dify provider does not currently support file attachments",
         url: this.completionEndpoint,
         requestBodyValues: { hasAttachments: true },
       });
@@ -286,12 +306,18 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
     if (typeof latestMessage.content === "string") {
       query = latestMessage.content;
     } else if (Array.isArray(latestMessage.content)) {
-      // Handle AI SDK v4 format with text objects in content array
+      // Handle AI SDK v5 message format with text objects in content array
       query = latestMessage.content
-        .map((part: any) => {
+        .map((part) => {
           if (typeof part === "string") {
             return part;
-          } else if (part.type === "text") {
+          } else if (
+            typeof part === "object" &&
+            part !== null &&
+            "type" in part &&
+            part.type === "text" &&
+            "text" in part
+          ) {
             return part.text;
           }
           return "";
@@ -312,19 +338,5 @@ export class DifyCompletionLanguageModel implements LanguageModelV1 {
       response_mode: this.settings.responseMode,
       user: userId,
     };
-  }
-
-  /**
-   * Create the rawCall object for response
-   */
-  private createRawCall(options: ExtendedLanguageModelV1CallOptions) {
-    return {
-      rawPrompt: options.messages || options.prompt,
-      rawSettings: { ...this.settings },
-    };
-  }
-
-  supportsUrl?(_url: URL): boolean {
-    return false;
   }
 }
